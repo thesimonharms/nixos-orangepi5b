@@ -5,96 +5,75 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
-  outputs = { self, nixpkgs }: {
-    nixosConfigurations.orangepi5b = nixpkgs.lib.nixosSystem {
+  outputs = { self, nixpkgs }:
+    let
       system = "aarch64-linux";
-      modules = [
-        "${nixpkgs}/nixos/modules/installer/sd-card/sd-image-aarch64.nix"
-        ({ pkgs, config, lib, ... }: {
-          # Hostname
-          networking.hostName = "orangepi5b";
 
-          # Enable modern kernel with RK3588/RK3588S upstream support
-          boot.kernelPackages = pkgs.linuxPackages_latest;
+      # Base builder function for Orange Pi 5B systems
+      mkOrangePi5bSystem = { extraModules ? [] }: nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          "${nixpkgs}/nixos/modules/installer/sd-card/sd-image-aarch64.nix"
+          ./modules/hardware/orangepi5b.nix
+          ./modules/base.nix
+        ] ++ extraModules;
+      };
 
-          # Disable ZFS filesystem module which is incompatible with latest kernel
-          boot.supportedFilesystems.zfs = lib.mkForce false;
-          boot.zfs.forceImportRoot = false;
-
-          # Hardware device tree for Orange Pi 5B
-          hardware.deviceTree.enable = true;
-          hardware.deviceTree.name = "rockchip/rk3588s-orangepi-5b.dtb";
-          hardware.enableRedistributableFirmware = true;
-
-          # Bootloader configuration
-          boot.loader.grub.enable = false;
-          boot.loader.generic-extlinux-compatible.enable = true;
-
-          # Serial and HDMI console parameters for Orange Pi 5/5B
-          boot.kernelParams = [
-            "console=ttyS2,1500000n8"
-            "console=tty1"
-            "earlycon=uart8250,mmio32,0xfeb50000,1500000"
+      customModule = if builtins.pathExists ./custom.nix then [ ./custom.nix ] else [];
+    in {
+      # Exported NixOS modules for downstream flake reuse
+      nixosModules = {
+        hardware = import ./modules/hardware/orangepi5b.nix;
+        base = import ./modules/base.nix;
+        default = { ... }: {
+          imports = [
+            ./modules/hardware/orangepi5b.nix
+            ./modules/base.nix
           ];
+        };
+      };
 
-          # SD Image build settings
-          image.baseName = "nixos-orangepi5b";
-          sdImage = {
-            # Leave at least 32 MiB before partition 1 so u-boot-rockchip.bin (9.5MB) doesn't overlap
-            firmwarePartitionOffset = 32;
-            # Embed the Rockchip U-Boot binary at sector 64 (32 KiB offset)
-            postBuildCommands = ''
-              ${pkgs.coreutils}/bin/dd if=${pkgs.ubootOrangePi5}/u-boot-rockchip.bin of=$img seek=64 conv=notrunc
-            '';
-            compressImage = true;
-          };
+      # Library helpers for downstream flakes
+      lib = {
+        mkSystem = mkOrangePi5bSystem;
+        mkImage = { extraModules ? [] }: (mkOrangePi5bSystem { inherit extraModules; }).config.system.build.sdImage;
+      };
 
-          # Networking & SSH
-          networking.networkmanager.enable = true;
-          services.openssh = {
-            enable = true;
-            settings = {
-              PermitRootLogin = "yes";
-              PasswordAuthentication = true;
-            };
-          };
+      # Available NixOS configurations
+      nixosConfigurations = {
+        # Default / Custom configuration (includes custom.nix)
+        orangepi5b = mkOrangePi5bSystem {
+          extraModules = customModule;
+        };
 
-          # User configuration: user 'nixos' with password 'nixos', sudo without password
-          users.users.nixos = {
-            isNormalUser = true;
-            extraGroups = [ "wheel" "networkmanager" "video" "audio" ];
-            initialPassword = "nixos";
-          };
-          users.users.root.initialPassword = "nixos";
-          security.sudo.wheelNeedsPassword = false;
+        # Pre-configured Embedded IoT profile (GPIO, I2C, SPI, Python sensors, MQTT)
+        orangepi5b-iot = mkOrangePi5bSystem {
+          extraModules = [ ./modules/profiles/iot.nix ] ++ customModule;
+        };
 
-          # Serial getty auto-login for convenience on initial boot
-          services.getty.autologinUser = "nixos";
+        # Docker container host profile
+        orangepi5b-docker = mkOrangePi5bSystem {
+          extraModules = [ ./modules/profiles/docker.nix ] ++ customModule;
+        };
 
-          # Nix settings
-          nix.settings.experimental-features = [ "nix-command" "flakes" ];
-          nixpkgs.config.allowUnfree = true;
+        # Embedded Kiosk / Display profile
+        orangepi5b-kiosk = mkOrangePi5bSystem {
+          extraModules = [ ./modules/profiles/kiosk.nix ] ++ customModule;
+        };
 
-          # Essential utilities
-          environment.systemPackages = with pkgs; [
-            vim
-            wget
-            curl
-            git
-            htop
-            pciutils
-            usbutils
-            ethtool
-            i2c-tools
-            dtc
-          ];
+        # Minimal headless profile
+        orangepi5b-minimal = mkOrangePi5bSystem {
+          extraModules = [ ./modules/profiles/minimal.nix ] ++ customModule;
+        };
+      };
 
-          system.stateVersion = "25.05";
-        })
-      ];
+      # Flashable SD / eMMC image build targets
+      images = {
+        orangepi5b = self.nixosConfigurations.orangepi5b.config.system.build.sdImage;
+        orangepi5b-iot = self.nixosConfigurations.orangepi5b-iot.config.system.build.sdImage;
+        orangepi5b-docker = self.nixosConfigurations.orangepi5b-docker.config.system.build.sdImage;
+        orangepi5b-kiosk = self.nixosConfigurations.orangepi5b-kiosk.config.system.build.sdImage;
+        orangepi5b-minimal = self.nixosConfigurations.orangepi5b-minimal.config.system.build.sdImage;
+      };
     };
-
-    # Convenient shortcut
-    images.orangepi5b = self.nixosConfigurations.orangepi5b.config.system.build.sdImage;
-  };
 }
