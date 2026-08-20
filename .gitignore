@@ -1,0 +1,5 @@
+output/
+result*
+*.img
+*.img.zst
+.direnv/
